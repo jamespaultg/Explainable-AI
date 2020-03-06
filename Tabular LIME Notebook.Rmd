@@ -1,0 +1,375 @@
+---
+title: "Tabular LIME Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+```{r}
+# Load Data ------------------------------------------------------------------------
+original <- read.table("Data/Titanic.csv", header=T, sep=",") 
+head(original)
+```
+
+Let us explore the data to understand it better
+```{r}
+#####################################################################################
+#
+# Data processing and exploratory analytics
+#
+#####################################################################################
+
+# Data preprocessing ------------------------------------------------------------
+original_subset = original[,c(1,2,3,4,5,6,7,8,10,12)]
+#inputdata <- na.omit(original_subset)
+
+ordereddf <- original_subset[order(original_subset$Survived),]
+ordereddf$ID <- seq_len(nrow(ordereddf))
+ordereddf$ID[1:50] <- ordereddf$ID[1:50] + 2000
+inputdata <- na.omit(ordereddf)
+
+
+# Exploratory Analytics
+# Question 1: How many men and women were on board? --------------------------------
+cat("Number of female and male on board")
+table(inputdata$Sex)
+
+# Question 2: What is the percentage of people that survived? ----------------------
+cat("\n % of people that survived(indicated as 1)")
+trunc(table(inputdata$Survived) / nrow(inputdata) * 100)
+```
+
+Let us look at the age distribution of the people
+```{r}
+# Question 3: What is the distribution of the age of passengers? -------------------
+hist(inputdata$Age, 
+     main="Age distribution of passengers", 
+          xlab="Age",col="blue", ylim=c(0,250))
+```
+
+We will split the data into training and validation set.  The focus today is to explain the AI model, so we will not be spending time on creating a better model using cross validation, hyper parameter turning etc. That will be a topic for another day.
+
+```{r "Split data into training and validation sets"}
+# Split data into training and validation sets
+set.seed(31415) # Set the seed so you can replicate data if necessary
+index <- 1:nrow(inputdata)
+validationindex <- sample(index, .15*trunc(length(index)))
+validationset <- inputdata[validationindex,] # validation set
+trainset <- inputdata[-validationindex,] # train set
+
+```
+## Let's build the models
+
+We will build two models
+
+- A simple model using decision tree
+- A complex AI xgboost model and use
+
+## Decision tree
+
+Note: The focus in this session is not to build the best model. We could select features by doing a in depth exploratory analysis by checking the correlation to the predictor. However we keep it simple here. We select some features that we know from common sense that might have an impact on the survival.
+The code of conduct that prevailed at that time, in a life threatening situation women and children were saved first. Also we can assume that the travel class, ticket fare and if they travelled with siblings could be important. 
+
+
+```{r}
+#####################################################################################
+#
+# Decision tree
+#
+#####################################################################################
+library(rpart)
+library(rpart.plot)
+set.seed(123)
+# Set model parameters
+Min_num_splits <- 100                     #Min items to search for split
+Min_bucket     <- floor(Min_num_splits/3) #Min items per bucket
+Max_depth      <- 10                      #Max depth of final tree
+# Train the tree
+mytree <- rpart(Survived ~ Sex + Fare + Age + Pclass + SibSp
+                # + all other variables you would like to run your model on
+                , data=trainset
+                , control = rpart.control(minsplit  = Min_num_splits,
+                                          minbucket = Min_bucket,
+                                          maxdepth  = Max_depth)
+)
+
+
+# Decision tree confusion maatrix
+trainset$tree_prediction <- ifelse( predict(mytree,trainset)>=0.5, 1, 0)
+decisiontable<- table(trainset$tree_prediction,trainset$Survived)
+#decisiontable
+cat("Accuracy of Decision tree : ", sum(diag(decisiontable))/nrow(trainset))
+
+```
+
+### Decision tree - accuracy
+We can see that the decision tree has an accuracy of 79.40% 
+Accuracy is the % of correctly predicted cases.
+
+Let us visualise the decision tree. It is easily interprettable.
+What do we see? The nodes in the last row indicate the probability 
+
+```{r}
+
+# Visualise the tree to see which variables drive the model 
+prp(mytree, 
+    main = "Decision Tree",     #Title
+    type = 4,                      
+    fallen = T,
+    branch = 1,
+    clip.right.labs = F,
+    under.cex = 1, 
+    box.palette = "-GnYlRd",
+    extra = 101,
+    branch.col="gray", 
+    under = T,
+    lt = " < ",
+    ge = " >= ")
+```
+
+## XGBoost
+Now let us try a complex model XGBoost.
+so what is a XGBoost model?
+- The XGBoost library implements the gradient boosting decision tree algorithm.
+
+- Boosting is an ensemble technique where new models are added to correct the errors made by existing models. Models are added sequentially until no further improvements can be made.
+
+- This approach supports both regression and classification predictive modeling problems.
+
+```{r}
+#####################################################################################
+#
+# XGBOOST
+#
+#####################################################################################
+library(xgboost)
+set.seed(123)
+trainset_xgb = trainset[c('Sex','Fare', 'Age', 'Pclass', 'SibSp', 'Survived')]
+
+# xgboost specific feature adjustment
+# Converting factors to numerics and making the variables start at 0 since this is a requirement of the xgboost package
+trainset_xgb$Sex <- as.numeric(trainset_xgb$Sex)-1
+trainset_xgb$Pclass <- as.numeric(trainset_xgb$Pclass)-1
+#trainset_xgb$ID <- as.numeric(trainset_xgb$ID)-1
+
+# convert the new dataframe into a matrix 
+trainset_xgb <- as.matrix(trainset_xgb)
+
+param <- list("objective" = "binary:logistic", eta=0.1, 
+              subsample=0.5, max_depth=6)
+
+fit_xgboost <- xgboost(param =param, data = trainset_xgb[, -c(6)], label = trainset_xgb[, c(6)], nrounds=15)
+
+
+# Get the feature real names
+names <- dimnames(trainset_xgb[, -c(6)])[[2]]
+
+# Xgboost confusion maatrix
+trainset$xgb_prediction <- ifelse( predict(fit_xgboost, trainset_xgb[, -c(6)]) >=0.5, 1, 0)
+xgbtable <- table(trainset$xgb_prediction,trainset$Survived)
+#xgbtable
+cat("\nAccuracy of XGBoost : ", sum(diag(xgbtable))/nrow(trainset))
+
+```
+
+### Xgboost - accuracy
+We see that the accuracy of the model is 86.9%, higher than what we got in the decision tree(79.40%).
+
+## Which features are important?
+XGBoost has a plot that shows which features are important for the model. This shows at a **global** level the **relative importance** of the features for the model. This is **not a local explanation** for the individual observation. Gives an idea which features play prominent role in the prediction of the model.
+
+The plot shows the features ordered with their relative importance. The feature Sex is 3 times more important than Fare. 
+
+```{r}
+# Compute feature importance matrix
+importance_matrix <- xgb.importance(names, model = fit_xgboost)
+# Plotting
+par(mar = rep(2, 4))
+xgb.plot.importance(importance_matrix)
+
+```
+
+## Explanation using LIME
+For getting a local explanation for the XGBoost model, let us use LIME
+
+
+```{r}
+####################################################################################
+#
+# EXPLANATION USING LIME
+#
+####################################################################################
+
+library(lime)
+# explanation for xgboost
+## dataset
+data <- as.data.frame(trainset_xgb[, -c(6)])
+target <- as.data.frame(trainset_xgb[, c(6)])
+# observation(s) to explain, we are interested in records 10, 15
+#observations_to_explain <- c(570, 578)
+observations_to_explain <- as.numeric(which(trainset$PassengerId == 760 | trainset$PassengerId == 789))
+explain_data <- as.data.frame(trainset_xgb[observations_to_explain, -c(6)])
+# model
+model <- as_classifier(fit_xgboost)
+
+explain_data
+
+```
+###
+#Note: For XGBoost to work, the starting value of the factors(Sex, Pclass) should start with zero. So the original values of these factors have been reduced by 1 before building the xgboost model.
+
+Let us get the explanation for two passengers (chosen at random)
+
+- one of the **richest female The Countess of Rothes(Lucy Noel Martha Dyer-Edwards)**. Her passengerid is 760.
+
+Female(indicated by Sex - 0), ticket fare of 86.5 pounds, aged 33, travelled in first class (indicated by Pclass - 0) and travelled without any siblings
+
+- one of the **youngest male Master. Bertram Vere Dean** who was 1 year old then. His passengerid is 789.
+
+Sex - Male(indicated by Sex - 1), ticket fare of 86.5 pounds, aged 1, travelled in third class (indicated by Pclass - 2) and  travelled with siblings
+
+
+Both of them did actually survive, let us see what the model predicts and what lead to the prediction.
+
+```{r}
+###############################
+# Create explanation function
+explainer <- lime(data, model)
+
+# Explain the observations
+explanation <- lime::explain(explain_data, explainer, n_labels = 1, n_features = 3, n_permutations = 5000,
+  dist_fun = "gower",
+  kernel_width = 0.75,
+  feature_select = "highest_weights")
+
+# The output is provided in a nice tidy format
+explanation[,2:10]
+
+```
+LIME fits a local logistic regression model and gives back the model intercept and the feature weights in a dataframe.
+
+We can also visualise this in a plot showing the supporting and contradicting features with their relative weights.
+
+```{r}
+# And can be visualised directly
+plot_features(explanation)
+```
+
+
+## What doe we see in the plot?
+
+- the case indicates the passengerid (760, 789)
+
+- the model predicted that both survived (indicated by Label 1), also shows the proability of survival is 0.88
+
+- For the countess, the fact that she travelled in first class, without siblings and a fare higher than 34.20 pounds all have positively contributed to the prediction. 
+
+- For master Bertram, the fact that he was young has positively supported the model outcome, while the third class negatively contributed to the outcome. 
+
+## Can we improve the accuracy even further?
+
+That is good. But can we improve the accuracy even better? Let us **add another feature ID** to the model and see how the model improves.
+
+```{r}
+#####################################################################################
+#
+# XGBOOST - 2nd model using ID
+#
+#####################################################################################
+
+library(xgboost)
+set.seed(123)
+head(trainset)
+trainset_xgb2 = trainset[c('ID', 'Sex','Fare', 'Age', 'Pclass', 'SibSp', 'Survived')]
+
+# xgboost specific feature adjustment
+# Converting factors to numerics and making the variables start at 0 since this is a requirement of the xgboost package
+trainset_xgb2$Sex <- as.numeric(trainset_xgb2$Sex)-1
+trainset_xgb2$Pclass <- as.numeric(trainset_xgb2$Pclass)-1
+trainset_xgb2$ID <- as.numeric(trainset_xgb2$ID)-1
+
+# convert the new dataframe into a matrix 
+trainset_xgb2 <- as.matrix(trainset_xgb2)
+
+param <- list("objective" = "binary:logistic", eta=0.1, 
+              subsample=0.5, max_depth=6)
+
+fit_xgboost <- xgboost(param =param, data = trainset_xgb2[, -c(7)], label = trainset_xgb2[, c(7)], nrounds=15)
+
+
+# Get the feature real names
+names <- dimnames(trainset_xgb2[, -c(7)])[[2]]
+
+```
+
+Let us look at the accuracy of the model. The accuracy is 100%. Isn't it great?
+
+```{r}
+#
+# Xgboost confusion maatrix
+trainset$xgb_prediction <- ifelse( predict(fit_xgboost, trainset_xgb2[, -c(7)]) >=0.5, 1, 0)
+xgbtable <- table(trainset$xgb_prediction,trainset$Survived)
+#xgbtable
+cat("Accuracy of XGBoost : ", sum(diag(xgbtable))/nrow(trainset))
+```
+
+## Can we trust this model?
+But can we trust this model?  Which features contribute to the model prediction?
+
+```{r}
+# Compute feature importance matrix
+importance_matrix <- xgb.importance(names, model = fit_xgboost)
+# Plotting
+par(mar = rep(2, 4))
+xgb.plot.importance(importance_matrix)
+```
+
+
+Now let us use LIME to understand which features contributed to the prediction of the countess of Rothes and master Bertram.
+
+```{r}
+####################################################################################
+#
+# EXPLANATION USING LIME - XGBoost2
+#
+####################################################################################
+
+# explanation for xgboost 2nd model
+## dataset
+data <- as.data.frame(trainset_xgb2[, -c(7)])
+target <- as.data.frame(trainset_xgb2[, c(7)])
+# observation(s) to explain, we are interested in records 10, 15
+#observations_to_explain <- c(11,570)
+observations_to_explain <- as.numeric(which(trainset$PassengerId == 760 | trainset$PassengerId == 789))
+explain_data <- as.data.frame(trainset_xgb2[observations_to_explain, -c(7)])
+# model
+model <- as_classifier(fit_xgboost)
+
+###############################
+# Create explanation function
+explainer <- lime(data, model)
+
+# Explain the observations
+explanation <- lime::explain(explain_data, explainer, n_labels = 1, n_features = 4)
+
+# The output is provided in a nice tidy format
+#tibble::glimpse(explanation)
+
+# And can be visualised directly
+plot_features(explanation)
+
+```
+From the LIME explanation plot, we see that the feature ID plays a prominent role in deciding the outcome. But as a data scientist you know that ID is just a sequence number and doesn't explain anything about the passenger's details (in this case I added it purposefully after sorting the original data on the feature 'Survived', just to show the spurious correlation). Thanks to the explanation of the prediction, we can see that this model is not a good model. 
+
+
+## Recap
+The explanation is helpful to **debug** a model, **compare** different models, get the **buy-in from business** to implement the model(as reasoning behind the model prediction would help convincing the business user) and explain the outcome when needed to the **customer**.
+
+LIME can also be used for regression, Text classification and Image classification models.
+
+
+## Learn more
+https://uc-r.github.io/lime - An excellent tutorial on using LIME in R. Covers in detail the parameters that you can tweak to improve the fit for the local model and also how to make LIME support functions that aren't supported natively.
+
