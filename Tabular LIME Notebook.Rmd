@@ -9,7 +9,7 @@ This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute
 
 ```{r}
 # Load Data ------------------------------------------------------------------------
-original <- read.table("Data/Titanic.csv", header=T, sep=",") 
+original <- read.table("Data/titanic.csv", header=T, sep=",") 
 head(original)
 ```
 
